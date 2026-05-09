@@ -86,7 +86,7 @@ async function loadSession(SESSION_ID) {
     // Long: full zlib/base64 string (very long)
     if (payload.length < 50) {
         // SHORT SESSION — fetch full session from server
-        const serverUrl = `https://session.giftedtech.co.ke/session/${payload}`;
+        const serverUrl = `https://session.gifted.co.ke/session/${payload}`;
         const response = await axios.get(serverUrl, { timeout: 10000 });
         const fullSession = response.data;
 
@@ -159,7 +159,7 @@ SESSION_ID=Gifted~H4sIAAAAA...  # long session (full zlib string)
 
 ## Live Demo
 
-[`https://session.giftedtech.co.ke`](https://session.giftedtech.co.ke)
+[`https://session.gifted.co.ke`](https://session.gifted.co.ke)
 
 ---
 
@@ -169,7 +169,7 @@ SESSION_ID=Gifted~H4sIAAAAA...  # long session (full zlib string)
   <img src="https://github.com/mauricegift.png" width="150" height="150" alt="Gifted Tech" style="border-radius:50%"/>
 </a>
 
-[`ℹ️ Contact Owner`](https://api.giftedtech.co.ke/contact)
+[`ℹ️ Contact Owner`](https://api.gifted.co.ke/contact)
 
 
 ## Repo Star History

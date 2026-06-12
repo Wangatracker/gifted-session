@@ -1,213 +1,92 @@
 const { 
     giftedId,
-    removeFile
+    removeFile,
+    generateRandomCode
 } = require('../gift');
-const { SESSION_PREFIX, GC_JID, BOT_REPO, WA_CHANNEL, MSG_FOOTER } = require('../config');
-const { isConfigured, saveSession } = require('../gift/sessionStore');
-const QRCode = require('qrcode');
-const express = require('express');
 const zlib = require('zlib');
-const path = require('path');
+const express = require('express');
 const fs = require('fs');
+const path = require('path');
 let router = express.Router();
 const pino = require("pino");
 const { sendButtons } = require('gifted-btns');
 const {
     default: giftedConnect,
     useMultiFileAuthState,
-    Browsers,
     delay,
-    fetchLatestBaileysVersion
+    downloadContentFromMessage, 
+    generateWAMessageFromContent,
+    normalizeMessageContent,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    Browsers
 } = require("@whiskeysockets/baileys");
 
 const sessionDir = path.join(__dirname, "session");
 
-router.get('/session', async (req, res) => {
+router.get('/', async (req, res) => {
     const id = giftedId();
-    const sessionType = (req.query.type || 'short').toLowerCase();
+    let num = req.query.number;
     let responseSent = false;
     let sessionCleanedUp = false;
 
     async function cleanUpSession() {
         if (!sessionCleanedUp) {
-            await removeFile(path.join(sessionDir, id));
+            try {
+                await removeFile(path.join(sessionDir, id));
+            } catch (cleanupError) {
+                console.error("Cleanup error:", cleanupError);
+            }
             sessionCleanedUp = true;
         }
     }
 
-    async function GIFTED_QR_CODE() {
-        const { version } = await fetchLatestBaileysVersion();
-        console.log(version);
+    async function MEGAN_PAIR_CODE() {
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(version);
         const { state, saveCreds } = await useMultiFileAuthState(path.join(sessionDir, id));
         try {
-            let Gifted = giftedConnect({
+            let Megan = giftedConnect({
                 version,
-                auth: state,
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
+                },
                 printQRInTerminal: false,
-                logger: pino({ level: "silent" }),
-                browser: Browsers.macOS("Desktop"),
-                connectTimeoutMs: 60000,
+                logger: pino({ level: "fatal" }).child({ level: "fatal" }),
+                browser: Browsers.macOS("Safari"),
+                syncFullHistory: false,
+                generateHighQualityLinkPreview: true,
+                shouldIgnoreJid: jid => !!jid?.endsWith('@g.us'),
+                getMessage: async () => undefined,
+                markOnlineOnConnect: true,
+                connectTimeoutMs: 60000, 
                 keepAliveIntervalMs: 30000
             });
 
-            Gifted.ev.on('creds.update', saveCreds);
-            Gifted.ev.on("connection.update", async (s) => {
-                const { connection, lastDisconnect, qr } = s;
+            if (!Megan.authState.creds.registered) {
+                await delay(1500);
+                num = num.replace(/[^0-9]/g, '');
 
-                if (qr && !responseSent) {
-                    const qrImage = await QRCode.toDataURL(qr);
-                    if (!res.headersSent) {
-                        res.send(`
-                            <!DOCTYPE html>
-                            <html>
-                            <head>
-                                <title>ATASSA-MD | QR CODE</title>
-                                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-                                <style>
-                                    body {
-                                        display: flex;
-                                        justify-content: center;
-                                        align-items: center;
-                                        min-height: 100vh;
-                                        margin: 0;
-                                        background-color: #000;
-                                        font-family: Arial, sans-serif;
-                                        color: #fff;
-                                        text-align: center;
-                                        padding: 20px;
-                                        box-sizing: border-box;
-                                    }
-                                    .container {
-                                        width: 100%;
-                                        max-width: 600px;
-                                    }
-                                    .qr-container {
-                                        position: relative;
-                                        margin: 20px auto;
-                                        width: 300px;
-                                        height: 300px;
-                                        display: flex;
-                                        justify-content: center;
-                                        align-items: center;
-                                    }
-                                    .qr-code {
-                                        width: 300px;
-                                        height: 300px;
-                                        padding: 10px;
-                                        background: white;
-                                        border-radius: 20px;
-                                        box-shadow: 0 0 0 10px rgba(255,255,255,0.1),
-                                                    0 0 0 20px rgba(255,255,255,0.05),
-                                                    0 0 30px rgba(255,255,255,0.2);
-                                    }
-                                    .qr-code img {
-                                        width: 100%;
-                                        height: 100%;
-                                    }
-                                    h1 {
-                                        color: #fff;
-                                        margin: 0 0 15px 0;
-                                        font-size: 28px;
-                                        font-weight: 800;
-                                        text-shadow: 0 0 10px rgba(255,255,255,0.3);
-                                    }
-                                    p {
-                                        color: #ccc;
-                                        margin: 20px 0;
-                                        font-size: 16px;
-                                    }
-                                    .back-btn {
-                                        display: inline-block;
-                                        padding: 12px 25px;
-                                        margin-top: 15px;
-                                        background: linear-gradient(135deg, #6e48aa 0%, #9d50bb 100%);
-                                        color: white;
-                                        text-decoration: none;
-                                        border-radius: 30px;
-                                        font-weight: bold;
-                                        border: none;
-                                        cursor: pointer;
-                                        transition: all 0.3s ease;
-                                        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-                                    }
-                                    .back-btn:hover {
-                                        transform: translateY(-2px);
-                                        box-shadow: 0 6px 20px rgba(0,0,0,0.3);
-                                    }
-                                    .pulse {
-                                        animation: pulse 2s infinite;
-                                    }
-                                    @keyframes pulse {
-                                        0% {
-                                            box-shadow: 0 0 0 0 rgba(255,255,255,0.4);
-                                        }
-                                        70% {
-                                            box-shadow: 0 0 0 15px rgba(255,255,255,0);
-                                        }
-                                        100% {
-                                            box-shadow: 0 0 0 0 rgba(255,255,255,0);
-                                        }
-                                    }
-                                    @media (max-width: 480px) {
-                                        .qr-container {
-                                            width: 260px;
-                                            height: 260px;
-                                        }
-                                        .qr-code {
-                                            width: 220px;
-                                            height: 220px;
-                                        }
-                                        h1 {
-                                            font-size: 24px;
-                                        }
-                                    }
-                                </style>
-                            </head>
-                            <body>
-                                <div class="container">
-                                    ${(sessionType === 'short' && !isConfigured()) ? `
-                                    <div style="margin-bottom:18px;padding:12px 16px;border-radius:12px;border:1px solid rgba(96,165,250,0.3);background:rgba(30,58,138,0.25);display:flex;align-items:flex-start;gap:10px;text-align:left;">
-                                        <span style="font-size:1rem;margin-top:1px;flex-shrink:0;">ℹ️</span>
-                                        <p style="margin:0;font-size:0.78rem;color:#93c5fd;line-height:1.5;">Session store is not configured &mdash; automatically switched to <strong>Long session</strong>.</p>
-                                    </div>` : ''}
-                                    <h1>ATASSA QR CODE</h1>
-                                    <div class="qr-container">
-                                        <div class="qr-code pulse">
-                                            <img src="${qrImage}" alt="QR Code"/>
-                                        </div>
-                                    </div>
-                                    <p>Scan this QR code with your phone to connect</p>
-                                    <a href="./" class="back-btn">Back</a>
-                                </div>
-                                <script>
-                                    document.querySelector('.back-btn').addEventListener('mousedown', function(e) {
-                                        this.style.transform = 'translateY(1px)';
-                                        this.style.boxShadow = '0 2px 10px rgba(0,0,0,0.2)';
-                                    });
-                                    document.querySelector('.back-btn').addEventListener('mouseup', function(e) {
-                                        this.style.transform = 'translateY(-2px)';
-                                        this.style.boxShadow = '0 6px 20px rgba(0,0,0,0.3)';
-                                    });
-                                </script>
-                            </body>
-                            </html>
-                        `);
-                        responseSent = true;
-                    }
+                const randomCode = generateRandomCode();
+                const code = await Megan.requestPairingCode(num, randomCode);
+
+                if (!responseSent && !res.headersSent) {
+                    res.json({ code: code });
+                    responseSent = true;
                 }
+            }
+
+            Megan.ev.on('creds.update', saveCreds);
+            Megan.ev.on("connection.update", async (s) => {
+                const { connection, lastDisconnect } = s;
 
                 if (connection === "open") {
-                    try {
-                        await Gifted.groupAcceptInvite(GC_JID);
-                    } catch (e) {
-                        console.log("Group join error:", e.message);
-                    }
-
-                    await delay(10000);
+                    await delay(50000);
 
                     let sessionData = null;
                     let attempts = 0;
-                    const maxAttempts = 10;
+                    const maxAttempts = 15;
 
                     while (attempts < maxAttempts && !sessionData) {
                         try {
@@ -219,7 +98,7 @@ router.get('/session', async (req, res) => {
                                     break;
                                 }
                             }
-                            await delay(2000);
+                            await delay(8000);
                             attempts++;
                         } catch (readError) {
                             console.error("Read error:", readError);
@@ -236,51 +115,70 @@ router.get('/session', async (req, res) => {
                     try {
                         let compressedData = zlib.gzipSync(sessionData);
                         let b64data = compressedData.toString('base64');
-                        const fullSession = SESSION_PREFIX + b64data;
+                        await delay(5000); 
 
-                        let msgText, msgButtons;
-                        if (isConfigured() && sessionType === 'short') {
-                            const shortId = await saveSession(fullSession);
-                            const shortSession = `${SESSION_PREFIX}${shortId}`;
-                            msgText = `*SESSION ID ✅*\n\n${shortSession}`;
-                            msgButtons = [
-                                { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: 'Copy Session', copy_code: shortSession }) },
-                                { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Visit Bot Repo', url: BOT_REPO }) },
-                                { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Join WaChannel', url: WA_CHANNEL }) }
-                            ];
-                        } else {
-                            msgText = `*SESSION ID ✅*\n\n${fullSession}`;
-                            msgButtons = [
-                                { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: 'Copy Session', copy_code: fullSession }) },
-                                { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Visit Bot Repo', url: BOT_REPO }) },
-                                { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Join WaChannel', url: WA_CHANNEL }) }
-                            ];
+                        let sessionSent = false;
+                        let sendAttempts = 0;
+                        const maxSendAttempts = 5;
+                        let Sess = null;
+
+                        while (sendAttempts < maxSendAttempts && !sessionSent) {
+                            try {
+                                Sess = await sendButtons(Megan, Megan.user.id, {
+            title: '',
+            text: 'Megan~' + b64data,
+            footer: `> *ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴛʀᴀᴄᴋᴇʀ ᴡᴀɴɢᴀ*`,
+            buttons: [
+                { 
+                    name: 'cta_copy', 
+                    buttonParamsJson: JSON.stringify({ 
+                        display_text: 'Copy Session', 
+                        copy_code: 'Megan~' + b64data 
+                    }) 
+                },
+                {
+                    name: 'cta_url',
+                    buttonParamsJson: JSON.stringify({
+                        display_text: 'Join Channel',
+                        url: 'https://whatsapp.com/channel/0029VbCWWXi9hXF2SXUHgZ1b'
+                    })
+                }
+            ]
+        });
+                                sessionSent = true;
+                            } catch (sendError) {
+                                console.error("Send error:", sendError);
+                                sendAttempts++;
+                                if (sendAttempts < maxSendAttempts) {
+                                    await delay(3000);
+                                }
+                            }
                         }
 
-                        await sendButtons(Gifted, Gifted.user.id, {
-                            title: '',
-                            text: msgText,
-                            footer: MSG_FOOTER,
-                            buttons: msgButtons
-                        });
+                        if (!sessionSent) {
+                            await cleanUpSession();
+                            return;
+                        }
 
-                        await delay(2000);
-                        await Gifted.ws.close();
-                    } catch (sendError) {
-                        console.error("Error sending session:", sendError);
+                        await delay(3000);
+                        await Megan.ws.close();
+                    } catch (sessionError) {
+                        console.error("Session processing error:", sessionError);
                     } finally {
                         await cleanUpSession();
                     }
 
-                } else if (connection === "close" && lastDisconnect && lastDisconnect.error && lastDisconnect.error.output?.statusCode != 401) {
-                    await delay(10000);
-                    GIFTED_QR_CODE();
+                } else if (connection === "close" && lastDisconnect && lastDisconnect.error && lastDisconnect.error.output.statusCode != 401) {
+                    console.log("Reconnecting...");
+                    await delay(5000);
+                    MEGAN_PAIR_CODE();
                 }
             });
+
         } catch (err) {
             console.error("Main error:", err);
-            if (!responseSent) {
-                res.status(500).json({ code: "QR Service is Currently Unavailable" });
+            if (!responseSent && !res.headersSent) {
+                res.status(500).json({ code: "Service is Currently Unavailable" });
                 responseSent = true;
             }
             await cleanUpSession();
@@ -288,11 +186,11 @@ router.get('/session', async (req, res) => {
     }
 
     try {
-        await GIFTED_QR_CODE();
+        await MEGAN_PAIR_CODE();
     } catch (finalError) {
         console.error("Final error:", finalError);
         await cleanUpSession();
-        if (!responseSent) {
+        if (!responseSent && !res.headersSent) {
             res.status(500).json({ code: "Service Error" });
         }
     }

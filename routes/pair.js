@@ -1,9 +1,8 @@
 const { 
     giftedId,
-    removeFile
+    removeFile,
+    generateRandomCode
 } = require('../gift');
-const { SESSION_PREFIX, GC_JID, BOT_REPO, WA_CHANNEL, MSG_FOOTER } = require('../config');
-const { isConfigured, saveSession } = require('../gift/sessionStore');
 const zlib = require('zlib');
 const express = require('express');
 const fs = require('fs');
@@ -15,6 +14,9 @@ const {
     default: giftedConnect,
     useMultiFileAuthState,
     delay,
+    downloadContentFromMessage, 
+    generateWAMessageFromContent,
+    normalizeMessageContent,
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
     Browsers
@@ -22,194 +24,171 @@ const {
 
 const sessionDir = path.join(__dirname, "session");
 
-// Cleanup stale session dirs older than 10 minutes on startup
-try {
-    if (fs.existsSync(sessionDir)) {
-        const cutoff = Date.now() - 10 * 60 * 1000;
-        for (const entry of fs.readdirSync(sessionDir)) {
-            try {
-                const p = path.join(sessionDir, entry);
-                if (fs.statSync(p).isDirectory() && fs.statSync(p).mtimeMs < cutoff) {
-                    fs.rmSync(p, { recursive: true, force: true });
-                }
-            } catch (_) {}
-        }
-    }
-} catch (_) {}
-
 router.get('/', async (req, res) => {
     const id = giftedId();
-    let num = (req.query.number || '').replace(/[^0-9]/g, '');
-    const sessionType = (req.query.type || 'short').toLowerCase();
+    let num = req.query.number;
     let responseSent = false;
     let sessionCleanedUp = false;
-    let pairingDone = false;
-    let reconnectCount = 0;
-    const MAX_RECONNECTS = 10;
 
     async function cleanUpSession() {
         if (!sessionCleanedUp) {
+            try {
+                await removeFile(path.join(sessionDir, id));
+            } catch (cleanupError) {
+                console.error("Cleanup error:", cleanupError);
+            }
             sessionCleanedUp = true;
-            try { await removeFile(path.join(sessionDir, id)); } catch (_) {}
         }
     }
 
-    async function GIFTED_PAIR_CODE() {
-        const { version } = await fetchLatestBaileysVersion();
-        console.log(`[pair:${id}] version:`, version, '| registered:', false);
+    async function MEGAN_PAIR_CODE() {
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(version);
         const { state, saveCreds } = await useMultiFileAuthState(path.join(sessionDir, id));
-
-        let Gifted;
         try {
-            const pinoLogger = pino({ level: "fatal" }).child({ level: "fatal" });
-            Gifted = giftedConnect({
+            let Megan = giftedConnect({
                 version,
                 auth: {
                     creds: state.creds,
-                    keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
+                    keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
                 },
                 printQRInTerminal: false,
-                logger: pinoLogger,
+                logger: pino({ level: "fatal" }).child({ level: "fatal" }),
                 browser: Browsers.macOS("Safari"),
                 syncFullHistory: false,
                 generateHighQualityLinkPreview: true,
                 shouldIgnoreJid: jid => !!jid?.endsWith('@g.us'),
                 getMessage: async () => undefined,
                 markOnlineOnConnect: true,
-                connectTimeoutMs: 60000,
+                connectTimeoutMs: 60000, 
                 keepAliveIntervalMs: 30000
             });
+
+            if (!Megan.authState.creds.registered) {
+                await delay(1500);
+                num = num.replace(/[^0-9]/g, '');
+
+                const randomCode = generateRandomCode();
+                const code = await Megan.requestPairingCode(num, randomCode);
+
+                if (!responseSent && !res.headersSent) {
+                    res.json({ code: code });
+                    responseSent = true;
+                }
+            }
+
+            Megan.ev.on('creds.update', saveCreds);
+            Megan.ev.on("connection.update", async (s) => {
+                const { connection, lastDisconnect } = s;
+
+                if (connection === "open") {
+                    await delay(50000);
+
+                    let sessionData = null;
+                    let attempts = 0;
+                    const maxAttempts = 15;
+
+                    while (attempts < maxAttempts && !sessionData) {
+                        try {
+                            const credsPath = path.join(sessionDir, id, "creds.json");
+                            if (fs.existsSync(credsPath)) {
+                                const data = fs.readFileSync(credsPath);
+                                if (data && data.length > 100) {
+                                    sessionData = data;
+                                    break;
+                                }
+                            }
+                            await delay(8000);
+                            attempts++;
+                        } catch (readError) {
+                            console.error("Read error:", readError);
+                            await delay(2000);
+                            attempts++;
+                        }
+                    }
+
+                    if (!sessionData) {
+                        await cleanUpSession();
+                        return;
+                    }
+
+                    try {
+                        let compressedData = zlib.gzipSync(sessionData);
+                        let b64data = compressedData.toString('base64');
+                        await delay(5000); 
+
+                        let sessionSent = false;
+                        let sendAttempts = 0;
+                        const maxSendAttempts = 5;
+                        let Sess = null;
+
+                        while (sendAttempts < maxSendAttempts && !sessionSent) {
+                            try {
+                                Sess = await sendButtons(Megan, Megan.user.id, {
+            title: '',
+            text: 'Megan~' + b64data,
+            footer: `> *ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴛʀᴀᴄᴋᴇʀ ᴡᴀɴɢᴀ*`,
+            buttons: [
+                { 
+                    name: 'cta_copy', 
+                    buttonParamsJson: JSON.stringify({ 
+                        display_text: 'Copy Session', 
+                        copy_code: 'Megan~' + b64data 
+                    }) 
+                },
+                {
+                    name: 'cta_url',
+                    buttonParamsJson: JSON.stringify({
+                        display_text: 'Join Channel',
+                        url: 'https://whatsapp.com/channel/0029VbCWWXi9hXF2SXUHgZ1b'
+                    })
+                }
+            ]
+        });
+                                sessionSent = true;
+                            } catch (sendError) {
+                                console.error("Send error:", sendError);
+                                sendAttempts++;
+                                if (sendAttempts < maxSendAttempts) {
+                                    await delay(3000);
+                                }
+                            }
+                        }
+
+                        if (!sessionSent) {
+                            await cleanUpSession();
+                            return;
+                        }
+
+                        await delay(3000);
+                        await Megan.ws.close();
+                    } catch (sessionError) {
+                        console.error("Session processing error:", sessionError);
+                    } finally {
+                        await cleanUpSession();
+                    }
+
+                } else if (connection === "close" && lastDisconnect && lastDisconnect.error && lastDisconnect.error.output.statusCode != 401) {
+                    console.log("Reconnecting...");
+                    await delay(5000);
+                    MEGAN_PAIR_CODE();
+                }
+            });
+
         } catch (err) {
-            console.error(`[pair:${id}] giftedConnect failed:`, err.message);
+            console.error("Main error:", err);
             if (!responseSent && !res.headersSent) {
                 res.status(500).json({ code: "Service is Currently Unavailable" });
                 responseSent = true;
             }
             await cleanUpSession();
-            return;
-        }
-
-        // Attach ALL event listeners FIRST before any async work
-        Gifted.ev.on('creds.update', saveCreds);
-
-        Gifted.ev.on("connection.update", async (s) => {
-            const { connection, lastDisconnect } = s;
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log("[pair:"+id+"] event: "+JSON.stringify(Object.keys(s))+" conn="+connection+" status="+statusCode);
-
-            if (connection === "open") {
-                pairingDone = true;
-                console.log(`[pair:${id}] Pairing complete — connection open, saving session`);
-                try {
-                    try { await Gifted.groupAcceptInvite(GC_JID); } catch (_) {}
-
-                    await delay(50000);
-
-                    let sessionData = null;
-                    let attempts = 0;
-                    while (attempts < 15 && !sessionData) {
-                        try {
-                            const credsPath = path.join(sessionDir, id, "creds.json");
-                            if (fs.existsSync(credsPath)) {
-                                const data = fs.readFileSync(credsPath);
-                                if (data && data.length > 100) { sessionData = data; break; }
-                            }
-                            await delay(8000);
-                        } catch (_) { await delay(2000); }
-                        attempts++;
-                    }
-
-                    if (!sessionData) { await cleanUpSession(); return; }
-
-                    const compressedData = zlib.gzipSync(sessionData);
-                    const b64data = compressedData.toString('base64');
-                    const fullSession = SESSION_PREFIX + b64data;
-
-                    let msgText, msgButtons;
-                    if (isConfigured() && sessionType === 'short') {
-                        const shortId = await saveSession(fullSession);
-                        const shortSession = `${SESSION_PREFIX}${shortId}`;
-                        msgText = `*SESSION ID ✅*\n\n${shortSession}`;
-                        msgButtons = [
-                            { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: 'Copy Session', copy_code: shortSession }) },
-                            { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Visit Bot Repo', url: BOT_REPO }) },
-                            { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Join WaChannel', url: WA_CHANNEL }) }
-                        ];
-                    } else {
-                        msgText = `*SESSION ID ✅*\n\n${fullSession}`;
-                        msgButtons = [
-                            { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: 'Copy Session', copy_code: fullSession }) },
-                            { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Visit Bot Repo', url: BOT_REPO }) },
-                            { name: 'cta_url', buttonParamsJson: JSON.stringify({ display_text: 'Join WaChannel', url: WA_CHANNEL }) }
-                        ];
-                    }
-
-                    await delay(5000);
-                    let sessionSent = false, sendAttempts = 0;
-                    while (sendAttempts < 5 && !sessionSent) {
-                        try {
-                            await sendButtons(Gifted, Gifted.user.id, {
-                                title: '', text: msgText, footer: MSG_FOOTER, buttons: msgButtons
-                            });
-                            sessionSent = true;
-                            console.log(`[pair:${id}] Session sent successfully`);
-                        } catch (sendError) {
-                            console.error(`[pair:${id}] Send attempt ${sendAttempts + 1} failed:`, sendError.message);
-                            sendAttempts++;
-                            if (sendAttempts < 5) await delay(3000);
-                        }
-                    }
-
-                    await delay(3000);
-                    try { await Gifted.ws.close(); } catch (_) {}
-                } catch (sessionError) {
-                    console.error(`[pair:${id}] Session processing error:`, sessionError.message);
-                } finally {
-                    await cleanUpSession();
-                }
-
-            } else if (connection === "close") {
-                if (pairingDone || statusCode === 401 || reconnectCount >= MAX_RECONNECTS) {
-                    console.log(`[pair:${id}] Not reconnecting (done=${pairingDone}, status=${statusCode}, attempts=${reconnectCount})`);
-                    await cleanUpSession();
-                    return;
-                }
-                // WhatsApp sends 515 (restart required) after pairing code entry — must reconnect
-                reconnectCount++;
-                console.log(`[pair:${id}] Reconnect #${reconnectCount} in 5s (status ${statusCode})`);
-                await delay(5000);
-                GIFTED_PAIR_CODE();
-            }
-        });
-
-        // Request pairing code AFTER listeners are attached (avoids missing close events)
-        if (!Gifted.authState.creds.registered) {
-            await delay(2000); // brief wait for WS to establish
-            console.log(`[pair:${id}] Requesting pairing code for ${num}`);
-            try {
-                const code = await Gifted.requestPairingCode(num);
-                console.log(`[pair:${id}] Got code: ${code}`);
-                if (!responseSent && !res.headersSent) {
-                    res.json({ code: code, fallback: sessionType === 'short' && !isConfigured() });
-                    responseSent = true;
-                }
-            } catch (codeErr) {
-                console.error(`[pair:${id}] requestPairingCode error:`, codeErr.message);
-                if (!responseSent && !res.headersSent) {
-                    res.status(500).json({ code: "Failed to generate pairing code" });
-                    responseSent = true;
-                }
-                await cleanUpSession();
-            }
-        } else {
-            console.log(`[pair:${id}] Creds already registered — awaiting reconnect/open`);
         }
     }
 
     try {
-        await GIFTED_PAIR_CODE();
+        await MEGAN_PAIR_CODE();
     } catch (finalError) {
-        console.error(`[pair:${id}] Final error:`, finalError.message);
+        console.error("Final error:", finalError);
         await cleanUpSession();
         if (!responseSent && !res.headersSent) {
             res.status(500).json({ code: "Service Error" });
